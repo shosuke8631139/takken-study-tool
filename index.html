@@ -11856,6 +11856,62 @@ function saveToStorage(data) {
   try { localStorage.setItem('takken_results', JSON.stringify(data)); } catch(e) {}
 }
 
+// ===== セッション継続（続きから再開）機能 =====
+function saveSession() {
+  if (!S.started || S.total === 0) return;
+  try {
+    const data = {
+      cat: S.cat,
+      hardMode: S.hardMode,
+      nigatMode: S.nigatMode,
+      bookmarkMode: S.bookmarkMode,
+      mode: S._lastMode || 'freq',
+      queueIds: S.queue.map(q => q.id),
+      total: S.total,
+      correct: S.correct,
+      sessionTotal: S.sessionTotal,
+      wrongIds: S.wrong.map(q => q.id),
+      savedAt: new Date().toISOString()
+    };
+    localStorage.setItem('takken_session', JSON.stringify(data));
+  } catch(e) {}
+}
+function loadSessionData() {
+  try { return JSON.parse(localStorage.getItem('takken_session') || 'null'); } catch(e) { return null; }
+}
+function clearSession() {
+  localStorage.removeItem('takken_session');
+}
+function resumeSession() {
+  const data = loadSessionData();
+  if (!data) return;
+  clearSession();
+  S.cat = data.cat || 'all';
+  S.hardMode = data.hardMode || false;
+  S.nigatMode = data.nigatMode || false;
+  S.bookmarkMode = data.bookmarkMode || false;
+  S._lastMode = data.mode || 'freq';
+  S.total = data.total || 0;
+  S.correct = data.correct || 0;
+  S.sessionTotal = data.sessionTotal || 0;
+  const idMap = {};
+  DB.forEach(q => { idMap[q.id] = q; });
+  S.queue = (data.queueIds || []).map(id => idMap[id]).filter(Boolean);
+  S.wrong = (data.wrongIds || []).map(id => idMap[id]).filter(Boolean);
+  document.querySelectorAll('.cat-btn').forEach(b => {
+    b.classList.remove('active');
+    const oc = b.getAttribute('onclick') || '';
+    if (S.cat === 'all' && oc.includes("'all'")) b.classList.add('active');
+    else if (S.cat !== 'all' && oc.includes("'" + S.cat + "'")) b.classList.add('active');
+  });
+  S.started = true;
+  clearChat();
+  updateStats();
+  const rate = S.total > 0 ? Math.round(S.correct / S.total * 100) : 0;
+  addMsg('<div class="bubble" style="background:#e8f5e9;border-left:4px solid #4caf50;color:#2e7d32;font-weight:bold;padding:12px 14px;">▶ 続きから再開！（' + S.total + '問回答済み・正解率' + rate + '% / 残り' + S.queue.length + '問）</div>');
+  nextQ();
+}
+
 // ===== ブックマーク機能 =====
 function loadBookmarks() {
   try { return JSON.parse(localStorage.getItem('takken_bookmarks') || '{}'); } catch(e) { return {}; }
@@ -13929,7 +13985,8 @@ let S = {
   correct: 0,
   wrong: [],
   started: false,
-  sessionTotal: 0
+  sessionTotal: 0,
+  _lastMode: 'freq'
 };
 
 function shuffle(arr) {
@@ -14038,6 +14095,24 @@ function updateStats() {
 // =============================================
 function renderWelcome() {
   const catLabel = {all:'全分野', 業法:'宅建業法', 権利:'権利関係', 法令:'法令制限', 税:'税・その他'};
+  const session = loadSessionData();
+  let resumeBtn = '';
+  if (session && session.total > 0 && (session.queueIds || []).length > 0) {
+    const rate = Math.round(session.correct / session.total * 100);
+    const remain = session.queueIds.length;
+    const d = new Date(session.savedAt);
+    const savedStr = (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0');
+    const modeLabelMap = {freq:'頻出順', rand:'ランダム', weak:'弱点集中'};
+    const modeStr = modeLabelMap[session.mode] || session.mode;
+    const catStr = catLabel[session.cat] || session.cat || '全分野';
+    resumeBtn = `
+      <button class="mode-btn" onclick="resumeSession()" style="background:linear-gradient(135deg,#e8f5e9,#c8e6c9);border:2px solid #4caf50;color:#1b5e20;margin-bottom:4px;">
+        ▶ 続きから再開する
+        <div class="desc" style="color:#2e7d32;">${catStr}・${modeStr} ／ ${session.total}問回答済み・正解率${rate}% ／ 残り${remain}問（${savedStr} 保存）</div>
+      </button>
+      <div style="border-top:1px dashed #ccc;margin:10px 0 8px;"></div>
+    `;
+  }
   addMsg(`
     <div class="q-card welcome">
       <h2 style="color:#1a4a7a;font-size:18px;margin-bottom:8px;">🏠 宅建学習チャット</h2>
@@ -14045,6 +14120,7 @@ function renderWelcome() {
         人気講師（棚田・ゆーき大学・こざりえ）の頻出テーマを凝縮。<br>
         <strong>${catLabel[S.cat]}</strong>から <strong>${S.queue.length}問</strong> 出題します。
       </p>
+      ${resumeBtn}
       <button class="mode-btn" onclick="startMode('freq')">
         ⭐ 頻出順でスタート
         <div class="desc">S級（最頻出）→A級の順で出題。まずここから！</div>
@@ -14062,6 +14138,8 @@ function renderWelcome() {
 }
 
 function startMode(mode) {
+  clearSession();
+  S._lastMode = mode;
   if (mode === 'weak') {
     if (S.wrong.length === 0) {
       addMsg('<div class="bubble">まだ間違えた問題がありません。まず頻出順でスタートしましょう！</div>');
@@ -14137,6 +14215,7 @@ function answer(idx) {
   }
 
   updateStats();
+  saveSession();
 
   const banner = ok
     ? `<div class="result-banner ok">✅ 正解！</div>`
@@ -14301,6 +14380,7 @@ function startWeak() {
 }
 
 function showFinalResult() {
+  clearSession();
   const rate = S.total > 0 ? Math.round(S.correct / S.total * 100) : 0;
   let comment = rate >= 80 ? '🎉 すばらしい！この調子で！' : rate >= 60 ? '💪 もう少し！弱点を復習しよう' : '📚 基礎から復習しよう！';
   addMsg(`
