@@ -11856,10 +11856,14 @@ function saveToStorage(data) {
   try { localStorage.setItem('takken_results', JSON.stringify(data)); } catch(e) {}
 }
 
-// ===== セッション継続（続きから再開）機能 =====
+// ===== セッション継続（複数科目対応・続きから再開）=====
+function sessionKey(cat, mode) {
+  return 'takken_sess_' + (cat || 'all') + '_' + (mode || 'freq');
+}
 function saveSession() {
   if (!S.started || S.total === 0) return;
   try {
+    const key = sessionKey(S.cat, S._lastMode);
     const data = {
       cat: S.cat,
       hardMode: S.hardMode,
@@ -11873,19 +11877,36 @@ function saveSession() {
       wrongIds: S.wrong.map(q => q.id),
       savedAt: new Date().toISOString()
     };
-    localStorage.setItem('takken_session', JSON.stringify(data));
+    localStorage.setItem(key, JSON.stringify(data));
   } catch(e) {}
 }
-function loadSessionData() {
-  try { return JSON.parse(localStorage.getItem('takken_session') || 'null'); } catch(e) { return null; }
+function loadAllSessions() {
+  const sessions = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('takken_sess_')) {
+        const d = JSON.parse(localStorage.getItem(k) || 'null');
+        if (d && d.total > 0 && (d.queueIds || []).length > 0) {
+          sessions.push(Object.assign({ _key: k }, d));
+        }
+      }
+    }
+  } catch(e) {}
+  return sessions.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
 }
-function clearSession() {
-  localStorage.removeItem('takken_session');
+function clearSession(key) {
+  if (key) {
+    localStorage.removeItem(key);
+  } else {
+    localStorage.removeItem(sessionKey(S.cat, S._lastMode));
+  }
 }
-function resumeSession() {
-  const data = loadSessionData();
+function resumeSession(key) {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(key) || 'null'); } catch(e) {}
   if (!data) return;
-  clearSession();
+  localStorage.removeItem(key);
   S.cat = data.cat || 'all';
   S.hardMode = data.hardMode || false;
   S.nigatMode = data.nigatMode || false;
@@ -14095,23 +14116,22 @@ function updateStats() {
 // =============================================
 function renderWelcome() {
   const catLabel = {all:'全分野', 業法:'宅建業法', 権利:'権利関係', 法令:'法令制限', 税:'税・その他'};
-  const session = loadSessionData();
-  let resumeBtn = '';
-  if (session && session.total > 0 && (session.queueIds || []).length > 0) {
-    const rate = Math.round(session.correct / session.total * 100);
-    const remain = session.queueIds.length;
-    const d = new Date(session.savedAt);
-    const savedStr = (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0');
+  const sessions = loadAllSessions();
+  let resumeBtns = '';
+  if (sessions.length > 0) {
     const modeLabelMap = {freq:'頻出順', rand:'ランダム', weak:'弱点集中'};
-    const modeStr = modeLabelMap[session.mode] || session.mode;
-    const catStr = catLabel[session.cat] || session.cat || '全分野';
-    resumeBtn = `
-      <button class="mode-btn" onclick="resumeSession()" style="background:linear-gradient(135deg,#e8f5e9,#c8e6c9);border:2px solid #4caf50;color:#1b5e20;margin-bottom:4px;">
-        ▶ 続きから再開する
-        <div class="desc" style="color:#2e7d32;">${catStr}・${modeStr} ／ ${session.total}問回答済み・正解率${rate}% ／ 残り${remain}問（${savedStr} 保存）</div>
-      </button>
-      <div style="border-top:1px dashed #ccc;margin:10px 0 8px;"></div>
-    `;
+    resumeBtns = sessions.map(s => {
+      const rate = Math.round(s.correct / s.total * 100);
+      const d = new Date(s.savedAt);
+      const savedStr = (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0');
+      const catStr = catLabel[s.cat] || s.cat || '全分野';
+      const modeStr = modeLabelMap[s.mode] || s.mode;
+      return `<button class="mode-btn" onclick="resumeSession('${s._key}')" style="background:linear-gradient(135deg,#e8f5e9,#c8e6c9);border:2px solid #4caf50;color:#1b5e20;margin-bottom:4px;">
+        ▶ 続きから再開：${catStr}・${modeStr}
+        <div class="desc" style="color:#2e7d32;">${s.total}問回答済み・正解率${rate}% ／ 残り${s.queueIds.length}問（${savedStr} 保存）</div>
+      </button>`;
+    }).join('');
+    resumeBtns += '<div style="border-top:1px dashed #ccc;margin:10px 0 8px;"></div>';
   }
   addMsg(`
     <div class="q-card welcome">
@@ -14120,7 +14140,7 @@ function renderWelcome() {
         人気講師（棚田・ゆーき大学・こざりえ）の頻出テーマを凝縮。<br>
         <strong>${catLabel[S.cat]}</strong>から <strong>${S.queue.length}問</strong> 出題します。
       </p>
-      ${resumeBtn}
+      ${resumeBtns}
       <button class="mode-btn" onclick="startMode('freq')">
         ⭐ 頻出順でスタート
         <div class="desc">S級（最頻出）→A級の順で出題。まずここから！</div>
