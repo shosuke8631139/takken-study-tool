@@ -616,6 +616,7 @@
       <div class="drawer-divider"></div>
       <div class="drawer-section-title">📊 学習記録</div>
       <button class="drawer-item" style="background:#e8f0fe;color:#1a4a7a;" onclick="openStatsPanel()">📊 正答率ダッシュボード</button>
+      <button id="sr-drawer-btn" class="drawer-item" style="background:#e3f2fd;color:#1565c0;" onclick="openSrReview()">🔁 復習モード（スペーシングリピティション）</button>
       <div class="drawer-divider"></div>
       <div class="drawer-section-title">📝 模擬試験</div>
       <button class="drawer-item"
@@ -14696,7 +14697,14 @@ function answer(idx) {
     <button class="copy-prompt-btn" id="${promptId}" onclick="copyPrompt('${promptId}', ${q.id})">
       📋 この解説をAIにもっと詳しく聞くプロンプトをコピー
     </button>
-    <button class="next-btn" onclick="nextQ()">次の問題へ →</button>
+    <div style="background:#f0f4ff;border-radius:12px;padding:12px 14px;margin-bottom:8px;border:1px solid #c5cae9;">
+      <div style="font-size:12px;font-weight:700;color:#3949ab;margin-bottom:8px;text-align:center;">🔁 定着度チェック（タップして次の問題へ）</div>
+      <div style="display:flex;gap:6px;">
+        <button onclick="srRateAndNext(${q.id}, 5)" style="flex:1;padding:10px 4px;border:2px solid #43a047;border-radius:10px;background:#e8f5e9;color:#2e7d32;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;line-height:1.4;">😊<br>楽勝</button>
+        <button onclick="srRateAndNext(${q.id}, 3)" style="flex:1;padding:10px 4px;border:2px solid #fb8c00;border-radius:10px;background:#fff3e0;color:#e65100;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;line-height:1.4;">😅<br>まあまあ</button>
+        <button onclick="srRateAndNext(${q.id}, 1)" style="flex:1;padding:10px 4px;border:2px solid #e53935;border-radius:10px;background:#ffebee;color:#c62828;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;line-height:1.4;">😰<br>難しかった</button>
+      </div>
+    </div>
   `);
 }
 
@@ -14908,12 +14916,295 @@ function drawerOpenKozarie() {
 }
 
 // ===== アプリ初期化 =====
+// ===== スペーシングリピティション (SM-2 Spaced Repetition System) =====
+const SR_KEY = 'sr_v1';
+let srData = {};
+
+function loadSrData() {
+  try { srData = JSON.parse(localStorage.getItem(SR_KEY) || '{}'); }
+  catch(e) { srData = {}; }
+}
+function saveSrData() { localStorage.setItem(SR_KEY, JSON.stringify(srData)); }
+
+function getSrCard(id) {
+  if (!srData[id]) srData[id] = { ef: 2.5, interval: 0, reps: 0, due: Date.now(), lastReview: null };
+  return srData[id];
+}
+
+// SM-2アルゴリズム: quality 5=楽勝, 3=まあまあ, 1=難しかった
+function updateSrCard(id, quality) {
+  const c = getSrCard(id);
+  if (quality >= 3) {
+    if (c.reps === 0) c.interval = 1;
+    else if (c.reps === 1) c.interval = 6;
+    else c.interval = Math.round(c.interval * c.ef);
+    c.reps++;
+  } else {
+    c.reps = 0;
+    c.interval = 1;
+  }
+  c.ef = Math.max(1.3, c.ef + 0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02));
+  c.due = Date.now() + c.interval * 86400000;
+  c.lastReview = Date.now();
+  srData[id] = c;
+  saveSrData();
+}
+
+function getSrDueCount() {
+  const now = Date.now();
+  return Object.values(srData).filter(c => c.lastReview && c.due <= now).length;
+}
+
+function getSrIntervalText(id) {
+  const c = srData[id];
+  if (!c || !c.lastReview) return '新規';
+  const d = c.interval;
+  if (d <= 1) return '明日';
+  if (d < 7) return d + '日後';
+  if (d < 30) return Math.round(d / 7) + '週間後';
+  return Math.round(d / 30) + 'ヶ月後';
+}
+
+// ---- 復習セッション状態 ----
+let srSession = { queue: [], idx: 0, answered: false, results: [], rated: false };
+
+function openSrReview() {
+  loadSrData();
+  const now = Date.now();
+  const seenIds = new Set(Object.keys(srData).map(Number).filter(id => srData[id] && srData[id].lastReview));
+  const dueItems = Object.entries(srData)
+    .filter(([, c]) => c.lastReview && c.due <= now)
+    .sort(([, a], [, b]) => a.due - b.due)
+    .map(([id]) => parseInt(id));
+  const newItems = DB.filter(q => !seenIds.has(q.id)).slice(0, Math.max(0, 20 - dueItems.length)).map(q => q.id);
+  const queue = [...dueItems, ...newItems];
+
+  const statsDiv = document.getElementById('sr-start-stats');
+  if (queue.length === 0) {
+    statsDiv.innerHTML = '<div style="color:#2e7d32;font-weight:800;font-size:16px;">🎉 今日の復習は完了！</div><div style="color:#555;font-size:13px;margin-top:6px;">素晴らしい！また明日来てください。</div>';
+    document.getElementById('sr-start-overlay').style.display = 'flex';
+    return;
+  }
+  statsDiv.innerHTML =
+    '<span style="color:#e65100;font-weight:700;">🔁 復習待ち：' + dueItems.length + '問</span>　' +
+    '<span style="color:#2e7d32;font-weight:700;">🆕 新規：' + newItems.length + '問</span><br>' +
+    '<span style="color:#888;font-size:13px;">合計 ' + queue.length + ' 問のセッション</span>';
+
+  srSession = { queue, idx: 0, answered: false, results: [], rated: false };
+  document.getElementById('sr-start-overlay').style.display = 'flex';
+}
+
+function startSrReview() {
+  document.getElementById('sr-start-overlay').style.display = 'none';
+  const overlay = document.getElementById('sr-exam-overlay');
+  overlay.style.display = 'flex';
+  renderSrQ();
+}
+
+function renderSrQ() {
+  const s = srSession;
+  const qId = s.queue[s.idx];
+  const q = DB.find(x => x.id === qId);
+  if (!q) { s.idx++; if (s.idx < s.queue.length) renderSrQ(); else showSrResults(); return; }
+  s.answered = false;
+  s.rated = false;
+
+  document.getElementById('sr-progress').textContent = (s.idx + 1) + ' / ' + s.queue.length;
+
+  const card = getSrCard(qId);
+  const isNew = !card.lastReview;
+  const rankBg = { S: '#fce4ec', A: '#fff3e0', B: '#f3e5f5', C: '#e8f5e9' };
+  const rankColor = { S: '#c62828', A: '#e65100', B: '#6a1b9a', C: '#2e7d32' };
+
+  const choicesHtml = q.c.map((ch, i) =>
+    '<button class="sr-choice-btn" id="src-' + i + '" onclick="srSelectAnswer(' + i + ')" ' +
+    'style="display:block;width:100%;text-align:left;padding:13px 16px;margin-bottom:8px;' +
+    'border:2px solid #e0e0e0;border-radius:12px;background:#fff;cursor:pointer;' +
+    'font-size:14px;line-height:1.5;font-family:inherit;">' +
+    '<span style="font-weight:700;color:#bbb;margin-right:8px;">' + ['①','②','③','④'][i] + '</span>' + ch +
+    '</button>'
+  ).join('');
+
+  document.getElementById('sr-exam-body').innerHTML =
+    '<div style="background:#fff;border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:0 2px 10px rgba(0,0,0,.08);">' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">' +
+        '<span style="background:#e3f2fd;color:#1565c0;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;">' + q.cat + '</span>' +
+        '<span style="background:' + (rankBg[q.rank]||'#f5f5f5') + ';color:' + (rankColor[q.rank]||'#555') + ';padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;">Rank ' + q.rank + '</span>' +
+        (isNew ? '<span style="background:#e8f5e9;color:#2e7d32;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;">🆕 新規</span>'
+               : '<span style="background:#fff8e1;color:#f57f17;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;">🔁 復習</span>') +
+      '</div>' +
+      '<div style="font-size:15px;font-weight:600;line-height:1.75;color:#222;margin-bottom:16px;">' + q.q + '</div>' +
+      '<div id="src-choices">' + choicesHtml + '</div>' +
+    '</div>' +
+    '<div id="src-explanation" style="display:none;"></div>' +
+    '<div id="src-rating" style="display:none;"></div>';
+}
+
+function srSelectAnswer(choiceIdx) {
+  if (srSession.answered) return;
+  srSession.answered = true;
+  const qId = srSession.queue[srSession.idx];
+  const q = DB.find(x => x.id === qId);
+  const ok = choiceIdx === q.a;
+  srSession.results.push({ id: qId, correct: ok });
+
+  q.c.forEach((_, i) => {
+    const btn = document.getElementById('src-' + i);
+    if (!btn) return;
+    btn.disabled = true;
+    btn.style.cursor = 'default';
+    if (i === q.a) { btn.style.background = '#e8f5e9'; btn.style.borderColor = '#4caf50'; btn.style.color = '#1b5e20'; btn.style.fontWeight = '700'; }
+    else if (i === choiceIdx && !ok) { btn.style.background = '#ffebee'; btn.style.borderColor = '#f44336'; btn.style.color = '#b71c1c'; }
+    else { btn.style.opacity = '0.45'; }
+  });
+
+  const expDiv = document.getElementById('src-explanation');
+  expDiv.style.display = 'block';
+  expDiv.innerHTML =
+    '<div style="background:' + (ok ? '#e8f5e9' : '#ffebee') + ';border-radius:14px;padding:18px;margin-bottom:12px;border-left:5px solid ' + (ok ? '#4caf50' : '#f44336') + ';">' +
+      '<div style="font-weight:900;font-size:17px;color:' + (ok ? '#2e7d32' : '#c62828') + ';margin-bottom:10px;">' + (ok ? '✅ 正解！' : '❌ 不正解　正解：' + q.c[q.a]) + '</div>' +
+      '<div style="font-size:14px;color:#333;line-height:1.75;margin-bottom:8px;">' + q.ex + '</div>' +
+      (q.pt ? '<div style="background:rgba(255,255,255,0.65);border-radius:8px;padding:10px 14px;font-size:13px;color:#555;margin-top:8px;">💡 ' + q.pt + '</div>' : '') +
+      (q.ez ? '<div style="background:rgba(255,255,255,0.65);border-radius:8px;padding:10px 14px;font-size:13px;color:#777;margin-top:6px;">🧠 ' + q.ez + '</div>' : '') +
+    '</div>';
+
+  const ratingDiv = document.getElementById('src-rating');
+  ratingDiv.style.display = 'block';
+  ratingDiv.innerHTML =
+    '<div style="background:#fff;border-radius:14px;padding:16px 14px;box-shadow:0 2px 10px rgba(0,0,0,.08);margin-bottom:20px;">' +
+      '<div style="font-size:13px;font-weight:700;color:#555;margin-bottom:12px;text-align:center;">📊 この問題の定着度は？（タップして次へ）</div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button onclick="srRateQ(5)" style="flex:1;padding:14px 6px;border:2px solid #43a047;border-radius:12px;background:#e8f5e9;color:#2e7d32;font-weight:800;font-size:13px;cursor:pointer;font-family:inherit;line-height:1.4;">😊<br>楽勝</button>' +
+        '<button onclick="srRateQ(3)" style="flex:1;padding:14px 6px;border:2px solid #fb8c00;border-radius:12px;background:#fff3e0;color:#e65100;font-weight:800;font-size:13px;cursor:pointer;font-family:inherit;line-height:1.4;">😅<br>まあまあ</button>' +
+        '<button onclick="srRateQ(1)" style="flex:1;padding:14px 6px;border:2px solid #e53935;border-radius:12px;background:#ffebee;color:#c62828;font-weight:800;font-size:13px;cursor:pointer;font-family:inherit;line-height:1.4;">😰<br>難しかった</button>' +
+      '</div>' +
+    '</div>';
+}
+
+function srRateQ(quality) {
+  if (srSession.rated) return;
+  srSession.rated = true;
+  const qId = srSession.queue[srSession.idx];
+  updateSrCard(qId, quality);
+  const nextTxt = getSrIntervalText(qId);
+  const isLast = srSession.idx + 1 >= srSession.queue.length;
+  document.getElementById('src-rating').innerHTML =
+    '<div style="background:#e3f2fd;border-radius:14px;padding:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;box-shadow:0 2px 10px rgba(0,0,0,.08);margin-bottom:20px;">' +
+      '<span style="font-size:13px;color:#1565c0;font-weight:700;">📅 次回の復習：' + nextTxt + '</span>' +
+      '<button onclick="srNextQ()" style="padding:12px 22px;border:none;border-radius:10px;background:#1565c0;color:#fff;font-weight:800;font-size:14px;cursor:pointer;white-space:nowrap;">' + (isLast ? '結果を見る 📊' : '次の問題 →') + '</button>' +
+    '</div>';
+  updateSrDrawerButton();
+}
+
+function srNextQ() {
+  srSession.idx++;
+  if (srSession.idx < srSession.queue.length) {
+    document.getElementById('sr-exam-overlay').scrollTo(0, 0);
+    renderSrQ();
+  } else {
+    showSrResults();
+  }
+}
+
+function showSrResults() {
+  document.getElementById('sr-exam-overlay').style.display = 'none';
+  const r = srSession.results;
+  const correct = r.filter(x => x.correct).length;
+  const total = r.length;
+  const pct = total > 0 ? Math.round(correct / total * 100) : 0;
+  const grade = pct >= 90 ? '🏆 完璧！' : pct >= 70 ? '✨ 順調です！' : pct >= 50 ? '📚 継続が力！' : '💪 もう一踏ん張り！';
+
+  // 次の復習予定
+  const futureDues = Object.values(srData).filter(c => c.lastReview && c.due > Date.now()).map(c => c.due).sort();
+  let nextDueTxt = '';
+  if (futureDues.length > 0) {
+    const diffH = Math.round((futureDues[0] - Date.now()) / 3600000);
+    nextDueTxt = diffH <= 23 ? '次の復習は約' + diffH + '時間後' : '次の復習は約' + Math.round(diffH / 24) + '日後';
+  }
+
+  document.getElementById('sr-results-body').innerHTML =
+    '<div style="font-size:44px;margin-bottom:10px;">🔁</div>' +
+    '<div style="font-size:22px;font-weight:900;color:#1565c0;margin-bottom:16px;">復習セッション完了！</div>' +
+    '<div style="font-size:56px;font-weight:900;color:' + (pct>=70?'#2e7d32':pct>=50?'#f57f17':'#c62828') + ';margin-bottom:4px;">' + pct + '<span style="font-size:24px;">%</span></div>' +
+    '<div style="font-size:14px;color:#888;margin-bottom:6px;">' + correct + ' / ' + total + ' 問 正解</div>' +
+    '<div style="font-size:22px;margin-bottom:20px;">' + grade + '</div>' +
+    (nextDueTxt ? '<div style="background:#e3f2fd;border-radius:10px;padding:10px 16px;font-size:13px;color:#1565c0;font-weight:700;margin-bottom:16px;">📅 ' + nextDueTxt + '</div>' : '') +
+    '<div style="background:#f5f7ff;border-radius:12px;padding:14px;margin-bottom:22px;font-size:13px;color:#555;line-height:1.7;text-align:left;">' +
+      '📖 SM-2アルゴリズムで' + total + '問の復習スケジュールを更新しました。<br>' +
+      '「楽勝」の問題は間隔が延び、「難しかった」問題は明日また出ます。' +
+    '</div>' +
+    '<button onclick="closeSrResults()" style="width:100%;padding:14px;background:linear-gradient(135deg,#1565c0,#1976d2);color:#fff;border:none;border-radius:14px;font-size:16px;font-weight:900;cursor:pointer;">閉じる</button>';
+
+  document.getElementById('sr-results-overlay').style.display = 'flex';
+  updateSrDrawerButton();
+}
+
+function closeSrResults() {
+  document.getElementById('sr-results-overlay').style.display = 'none';
+}
+
+function updateSrDrawerButton() {
+  const btn = document.getElementById('sr-drawer-btn');
+  if (!btn) return;
+  loadSrData();
+  const due = getSrDueCount();
+  if (due > 0) {
+    btn.innerHTML = '🔁 今日の復習 <span style="background:#f44336;color:#fff;border-radius:20px;padding:2px 9px;font-size:12px;margin-left:6px;font-weight:900;">' + due + '問</span>';
+    btn.style.background = '#fff3e0';
+    btn.style.color = '#e65100';
+    btn.style.border = '2px solid #ff9800';
+  } else {
+    btn.innerHTML = '🔁 復習モード（スペーシングリピティション）';
+    btn.style.background = '#e3f2fd';
+    btn.style.color = '#1565c0';
+    btn.style.border = 'none';
+  }
+}
+
+// 通常演習モードでのSR定着度記録（定着度ボタンから呼ばれる）
+function srRateAndNext(qId, quality) {
+  loadSrData();
+  updateSrCard(qId, quality);
+  updateSrDrawerButton();
+  nextQ();
+}
+// ===== SR end =====
+
 (function init() {
   updateNigatBadge();
   updateBookmarkBadge();
   renderCountdown();
   renderDailyProgress();
+  loadSrData();
+  updateSrDrawerButton();
 })();
 </script>
+
+<!-- ===== スペーシングリピティション オーバーレイ ===== -->
+<!-- SR スタートオーバーレイ -->
+<div id="sr-start-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.78);z-index:2000;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:20px;padding:40px 32px;max-width:440px;width:92%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,.35);">
+    <div style="font-size:44px;margin-bottom:10px;">🔁</div>
+    <div style="font-size:24px;font-weight:900;color:#1565c0;margin-bottom:12px;">今日の復習</div>
+    <div id="sr-start-stats" style="font-size:14px;color:#555;margin-bottom:24px;line-height:1.8;background:#f5f7ff;border-radius:12px;padding:14px;"></div>
+    <button onclick="startSrReview()" style="width:100%;padding:16px;background:linear-gradient(135deg,#1565c0,#1976d2);color:#fff;border:none;border-radius:14px;font-size:17px;font-weight:900;cursor:pointer;margin-bottom:10px;letter-spacing:0.5px;box-shadow:0 4px 14px rgba(21,101,192,.35);">🚀 復習スタート</button>
+    <button onclick="document.getElementById('sr-start-overlay').style.display='none'" style="width:100%;padding:12px;background:#f5f5f5;color:#666;border:none;border-radius:12px;font-size:14px;cursor:pointer;">キャンセル</button>
+  </div>
+</div>
+
+<!-- SR 試験オーバーレイ -->
+<div id="sr-exam-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:#eef2f7;z-index:2000;flex-direction:column;overflow-y:auto;">
+  <div style="position:sticky;top:0;background:linear-gradient(135deg,#1565c0,#1976d2);color:#fff;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,.25);">
+    <span style="font-weight:900;font-size:16px;">🔁 スペーシングリピティション</span>
+    <span id="sr-progress" style="font-size:13px;background:rgba(255,255,255,.2);padding:4px 14px;border-radius:20px;font-weight:700;"></span>
+  </div>
+  <div id="sr-exam-body" style="max-width:700px;margin:0 auto;padding:20px;width:100%;"></div>
+</div>
+
+<!-- SR 結果オーバーレイ -->
+<div id="sr-results-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.78);z-index:2100;align-items:center;justify-content:center;">
+  <div id="sr-results-body" style="background:#fff;border-radius:20px;padding:36px 28px;max-width:480px;width:92%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,.35);max-height:88vh;overflow-y:auto;"></div>
+</div>
+
 </body>
 </html>
