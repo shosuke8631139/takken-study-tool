@@ -616,6 +616,7 @@
       <div class="drawer-divider"></div>
       <div class="drawer-section-title">📊 学習記録</div>
       <button class="drawer-item" style="background:#e8f0fe;color:#1a4a7a;" onclick="openStatsPanel()">📊 正答率ダッシュボード</button>
+      <button class="drawer-item" style="background:#fff3e0;color:#bf360c;border:2px solid #ff6d00;" onclick="openWeakPanel()">🎯 弱点分析ダッシュボード</button>
       <button id="sr-drawer-btn" class="drawer-item" style="background:#e3f2fd;color:#1565c0;" onclick="openSrReview()">🔁 復習モード（スペーシングリピティション）</button>
       <div class="drawer-divider"></div>
       <div class="drawer-section-title">📝 模擬試験</div>
@@ -893,6 +894,20 @@
     <div id="stats-body" style="padding:16px;overflow-y:auto;max-height:75vh;"></div>
   </div>
 </div>
+<!-- 弱点分析ダッシュボード オーバーレイ -->
+<div id="weak-overlay" class="goro-overlay" style="display:none;">
+  <div class="goro-panel" style="max-width:520px;">
+    <div class="goro-header" style="background:linear-gradient(135deg,#bf360c,#e64a19);">
+      <div>
+        <div style="font-size:18px;font-weight:bold;">🎯 弱点分析ダッシュボード</div>
+        <div style="font-size:12px;opacity:0.85;margin-top:2px;">弱点を特定して合格ラインへ</div>
+      </div>
+      <button onclick="closeWeakPanel()" style="background:rgba(255,255,255,0.2);border:none;color:white;font-size:18px;border-radius:50%;width:36px;height:36px;cursor:pointer;flex-shrink:0;">✕</button>
+    </div>
+    <div id="weak-body" style="padding:16px;overflow-y:auto;max-height:75vh;"></div>
+  </div>
+</div>
+
 <!-- YouTuber語呂合わせ大全オーバーレイ -->
 <div id="mentor-overlay" class="goro-overlay">
   <div class="goro-header" style="background: linear-gradient(135deg, #ff4e50, #f9d423); color: #fff;">
@@ -14175,6 +14190,242 @@ function closeSuperMock7() {
 
 
 // === 正答率ダッシュボード ===
+// ===== 弱点分析ダッシュボード =====
+function openWeakPanel() {
+  closeDrawer();
+  renderWeakPanel();
+  const o = document.getElementById('weak-overlay');
+  o.style.display = 'flex';
+  setTimeout(() => o.classList.add('open'), 10);
+}
+function closeWeakPanel() {
+  const o = document.getElementById('weak-overlay');
+  o.classList.remove('open');
+  setTimeout(() => o.style.display = 'none', 300);
+}
+
+function renderWeakPanel() {
+  const r = loadResults();
+  const answeredIds = Object.keys(r).map(Number);
+  const body = document.getElementById('weak-body');
+
+  if (answeredIds.length < 10) {
+    body.innerHTML = '<div style="text-align:center;padding:40px;color:#999;"><div style="font-size:48px;">📊</div>' +
+      '<div style="margin-top:12px;font-size:15px;">もう少し問題を解いてください</div>' +
+      '<div style="margin-top:6px;font-size:13px;">10問以上解くと分析が始まります（現在 ' + answeredIds.length + ' 問）</div></div>';
+    return;
+  }
+
+  // ── カテゴリ定義（本番配点付き）──
+  const examDist = [
+    { key:'業法',     label:'宅建業法',   examQ:20, color:'#1565c0', bg:'#e3f2fd' },
+    { key:'権利',     label:'権利関係',   examQ:14, color:'#6a1b9a', bg:'#f3e5f5' },
+    { key:'法令',     label:'法令制限',   examQ:8,  color:'#880e4f', bg:'#fce4ec' },
+    { key:'税その他', label:'税・その他', examQ:3,  color:'#4a148c', bg:'#ede7f6' },
+    { key:'免除',     label:'免除科目',   examQ:5,  color:'#2e7d32', bg:'#e8f5e9' }
+  ];
+  function matchCat(q, key) {
+    if (key==='業法')     return q.cat==='業法'     || q.cat==='宅建業法';
+    if (key==='権利')     return q.cat==='権利'     || q.cat==='権利関係';
+    if (key==='法令')     return q.cat==='法令'     || q.cat==='法令上の制限';
+    if (key==='税その他') return q.cat==='税その他' || q.cat==='税' || q.cat==='その他' || q.cat==='税・その他';
+    if (key==='免除')     return q.cat==='免除';
+    return false;
+  }
+
+  const catStats = examDist.map(cat => {
+    const catQs = DB.filter(q => matchCat(q, cat.key));
+    let correct=0, wrong=0, answered=0;
+    catQs.forEach(q => { if(r[q.id]){ correct+=r[q.id].correct||0; wrong+=r[q.id].wrong||0; answered++; } });
+    const total = correct + wrong;
+    const rate = total > 0 ? correct / total : null;
+    const coverage = catQs.length > 0 ? answered / catQs.length : 0;
+    const predRate = rate !== null ? rate : 0.5;
+    const predPts  = Math.round(predRate * cat.examQ * 10) / 10;
+    const gainPts  = (rate !== null && rate < 0.8) ? Math.round((0.8 - rate) * cat.examQ * 10) / 10 : 0;
+    return { ...cat, correct, wrong, total, rate, answered, allCount:catQs.length, coverage, predRate, predPts, gainPts };
+  });
+
+  // ── 合格ライン予測 ──
+  const totalPred = catStats.reduce((s,c) => s + c.predPts, 0);
+  const passMark  = 35;
+  const isPassing = totalPred >= passMark;
+  const gap       = Math.round((passMark - totalPred) * 10) / 10;
+  const predColor = isPassing ? '#2e7d32' : totalPred >= 30 ? '#f57f17' : '#c62828';
+
+  // ── ランク別集計 ──
+  const rankStats = ['S','A','B','C'].map(rank => {
+    const qs = DB.filter(q => q.rank === rank);
+    let c=0, w=0;
+    qs.forEach(q => { if(r[q.id]){ c+=r[q.id].correct||0; w+=r[q.id].wrong||0; } });
+    const t = c + w;
+    return { rank, correct:c, wrong:w, total:t, rate: t>0 ? Math.round(c/t*100) : null, qCount:qs.length };
+  });
+
+  // ── 繰り返し間違える問題 TOP10 ──
+  const nigatList = DB
+    .filter(q => r[q.id] && r[q.id].wrong >= 2 && r[q.id].wrong > (r[q.id].correct||0))
+    .map(q => ({ q, wrong:r[q.id].wrong, correct:r[q.id].correct||0 }))
+    .sort((a,b) => b.wrong - a.wrong || (a.correct/(a.wrong+a.correct)) - (b.correct/(b.wrong+b.correct)))
+    .slice(0, 10);
+
+  // ── SR難易度マップ ──
+  loadSrData();
+  const hardSr = Object.entries(srData)
+    .filter(([,c]) => c.ef < 2.0 && c.lastReview)
+    .map(([id,c]) => ({ id:parseInt(id), ef:c.ef }))
+    .sort((a,b) => a.ef - b.ef)
+    .slice(0, 5)
+    .map(item => ({ item, q: DB.find(x => x.id === item.id) }))
+    .filter(x => x.q);
+
+  // ── アクションプラン自動生成 ──
+  const plan = [];
+  const byImpact = [...catStats].filter(c => c.rate!==null && c.gainPts>0).sort((a,b) => b.gainPts - a.gainPts);
+  if (byImpact[0]) plan.push({ icon:'🏆', text: byImpact[0].label + 'を集中強化 → 正解率を80%にすれば約 +' + byImpact[0].gainPts + '点UP' });
+  if (nigatList.length >= 2) plan.push({ icon:'🔁', text: '繰り返しミス問題上位' + Math.min(nigatList.length,5) + '問を集中攻略（特に「' + nigatList[0].q.q.slice(0,18) + '…」）' });
+  const sStat = rankStats.find(x => x.rank==='S');
+  if (sStat && sStat.rate!==null && sStat.rate < 70) plan.push({ icon:'⭐', text: 'S級問題の正解率が ' + sStat.rate + '% — 毎年必出なので最優先で完成させる' });
+  const weak = catStats.filter(c => c.rate!==null).sort((a,b) => a.rate - b.rate)[0];
+  if (weak && weak.rate < 0.55 && (!plan[0] || plan[0].text.indexOf(weak.label)<0)) plan.push({ icon:'📚', text: weak.label + 'の正解率が ' + Math.round(weak.rate*100) + '% と低い。基礎テキストから見直しを' });
+  const uncov = catStats.find(c => c.coverage < 0.1 && c.allCount > 20);
+  if (uncov) plan.push({ icon:'🆕', text: uncov.label + 'が未挑戦（' + uncov.answered + '/' + uncov.allCount + '問）。まず問題に触れることから始めよう' });
+
+  // ══════════════════════
+  // HTML組み立て
+  // ══════════════════════
+  let html = '';
+
+  // ①合格ライン予測スコア
+  html += '<div style="background:#fff;border-radius:14px;padding:18px;margin-bottom:14px;box-shadow:0 2px 10px rgba(0,0,0,.08);">';
+  html += '<div style="font-weight:800;font-size:14px;color:#333;margin-bottom:14px;">📊 現在の実力で本番に臨むと…（推定）</div>';
+  html += '<div style="display:flex;align-items:flex-end;gap:8px;margin-bottom:10px;">';
+  html += '<div style="font-size:56px;font-weight:900;color:' + predColor + ';line-height:1;">' + Math.round(totalPred) + '</div>';
+  html += '<div style="font-size:16px;color:#888;padding-bottom:10px;">点 / 50点</div>';
+  html += '</div>';
+  const barPct = Math.min(Math.round(totalPred / 50 * 100), 100);
+  const passPct = Math.round(passMark / 50 * 100);
+  html += '<div style="background:#f0f0f0;border-radius:8px;height:18px;margin-bottom:6px;position:relative;overflow:visible;">';
+  html += '<div style="background:' + predColor + ';width:' + barPct + '%;height:18px;border-radius:8px;transition:width .5s;"></div>';
+  html += '<div style="position:absolute;left:' + passPct + '%;top:-5px;height:28px;width:3px;background:#e53935;border-radius:2px;"></div>';
+  html += '<div style="position:absolute;left:' + passPct + '%;top:-20px;font-size:10px;color:#e53935;font-weight:700;transform:translateX(-50%);white-space:nowrap;">合格ライン</div>';
+  html += '</div>';
+  html += '<div style="display:flex;justify-content:space-between;font-size:11px;color:#aaa;margin-bottom:10px;"><span>0点</span><span>50点</span></div>';
+  html += isPassing
+    ? '<div style="background:#e8f5e9;border-radius:10px;padding:10px 14px;font-size:13px;color:#2e7d32;font-weight:700;">🎉 合格ライン超え！この調子で維持・強化を</div>'
+    : '<div style="background:#fff3e0;border-radius:10px;padding:10px 14px;font-size:13px;color:#e65100;font-weight:700;">あと <span style="font-size:18px;">' + (gap>0?gap:0) + '</span> 点で合格ライン！</div>';
+  html += '</div>';
+
+  // ②逆転チャンスランキング
+  html += '<div style="background:#fff;border-radius:14px;padding:18px;margin-bottom:14px;box-shadow:0 2px 10px rgba(0,0,0,.08);">';
+  html += '<div style="font-weight:800;font-size:14px;color:#333;margin-bottom:4px;">🎯 カテゴリ別 予測点数</div>';
+  html += '<div style="font-size:12px;color:#888;margin-bottom:14px;">正解率 × 本番配点 ＝ 予測点数　│　棒グラフが80%超えを目指そう</div>';
+  catStats.forEach(cat => {
+    const rDisp = cat.rate !== null ? Math.round(cat.rate*100) : null;
+    const bColor = cat.rate===null ? '#bbb' : cat.rate>=0.8 ? '#2e7d32' : cat.rate>=0.6 ? '#f57f17' : '#e53935';
+    const bw = cat.rate !== null ? Math.round(cat.rate*100) : 0;
+    html += '<div style="margin-bottom:12px;">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">';
+    html += '<div style="display:flex;align-items:center;gap:7px;">';
+    html += '<span style="background:' + cat.bg + ';color:' + cat.color + ';padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700;">' + cat.label + '</span>';
+    html += '<span style="font-size:11px;color:#aaa;">本番' + cat.examQ + '問</span>';
+    html += '</div>';
+    html += '<span style="font-weight:800;font-size:13px;color:' + bColor + ';">';
+    html += (rDisp!==null ? rDisp + '% → 約' + cat.predPts + '点' : '未解答（想定50%）→ 約' + cat.predPts + '点');
+    html += '</span></div>';
+    html += '<div style="background:#f0f0f0;border-radius:6px;height:12px;position:relative;">';
+    html += '<div style="background:' + bColor + ';width:' + bw + '%;height:12px;border-radius:6px;transition:width .5s;"></div>';
+    html += '<div style="position:absolute;left:80%;top:0;height:12px;width:2px;background:rgba(0,0,0,0.2);"></div>';
+    html += '</div>';
+    if (cat.coverage < 0.15 && cat.allCount > 10)
+      html += '<div style="font-size:11px;color:#ff9800;margin-top:3px;">⚠ 解答数が少ないため推定精度が低い（' + cat.answered + '/' + cat.allCount + '問）</div>';
+    else if (cat.gainPts > 0)
+      html += '<div style="font-size:11px;color:#1565c0;margin-top:3px;">📈 80%まで上げると ＋' + cat.gainPts + '点</div>';
+    else if (cat.rate !== null && cat.rate >= 0.8)
+      html += '<div style="font-size:11px;color:#2e7d32;margin-top:3px;">✅ 合格水準達成！</div>';
+    html += '</div>';
+  });
+  html += '</div>';
+
+  // ③ランク別正答率
+  html += '<div style="background:#fff;border-radius:14px;padding:18px;margin-bottom:14px;box-shadow:0 2px 10px rgba(0,0,0,.08);">';
+  html += '<div style="font-weight:800;font-size:14px;color:#333;margin-bottom:4px;">⭐ 重要度ランク別 正解率</div>';
+  html += '<div style="font-size:12px;color:#888;margin-bottom:12px;">S・A級問題は本番頻出 — 落とすと致命的</div>';
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">';
+  const rkBg = {S:'#fce4ec',A:'#fff3e0',B:'#f3e5f5',C:'#e8f5e9'};
+  const rkC  = {S:'#c62828',A:'#e65100',B:'#6a1b9a',C:'#2e7d32'};
+  rankStats.forEach(rs => {
+    const alert = (rs.rank==='S'||rs.rank==='A') && rs.rate!==null && rs.rate < 70;
+    const bc = rs.rate===null ? '#bbb' : rs.rate>=80 ? '#2e7d32' : rs.rate>=60 ? '#f57f17' : '#e53935';
+    html += '<div style="background:' + (rkBg[rs.rank]||'#f5f5f5') + ';border-radius:12px;padding:14px;' + (alert?'border:2px solid #e53935;':'') + '">';
+    html += '<div style="font-size:18px;font-weight:900;color:' + (rkC[rs.rank]||'#555') + ';">Rank ' + rs.rank + (alert?' ⚠':'') + '</div>';
+    html += '<div style="font-size:28px;font-weight:900;color:' + bc + ';margin:4px 0;">' + (rs.rate!==null ? rs.rate+'%' : '未解答') + '</div>';
+    html += '<div style="font-size:11px;color:#888;">' + rs.total + '回解答 / 全' + rs.qCount + '問</div>';
+    if (alert) html += '<div style="font-size:11px;color:#c62828;font-weight:700;margin-top:4px;">頻出！要強化</div>';
+    html += '</div>';
+  });
+  html += '</div></div>';
+
+  // ④繰り返しミス問題TOP10
+  html += '<div style="background:#fff;border-radius:14px;padding:18px;margin-bottom:14px;box-shadow:0 2px 10px rgba(0,0,0,.08);">';
+  html += '<div style="font-weight:800;font-size:14px;color:#333;margin-bottom:4px;">😰 繰り返し間違える問題 TOP10</div>';
+  html += '<div style="font-size:12px;color:#888;margin-bottom:12px;">2回以上ミス かつ 不正解が正解より多い問題</div>';
+  if (nigatList.length === 0) {
+    html += '<div style="text-align:center;padding:16px;color:#999;font-size:14px;">まだ該当データがありません。問題を続けて解きましょう！</div>';
+  } else {
+    nigatList.forEach((item, i) => {
+      const rate = Math.round(item.correct / (item.wrong + item.correct) * 100);
+      html += '<div style="padding:10px 12px;border-radius:10px;background:' + (i<3?'#fff5f5':'#fafafa') + ';margin-bottom:8px;border-left:3px solid ' + (i<3?'#e53935':'#ddd') + ';">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">';
+      html += '<div style="display:flex;gap:6px;align-items:center;">';
+      html += '<span style="font-size:12px;font-weight:900;color:' + (i<3?'#e53935':'#aaa') + ';">#' + (i+1) + '</span>';
+      html += '<span style="font-size:11px;font-weight:700;color:' + (rkC[item.q.rank]||'#555') + ';background:#f5f5f5;padding:2px 6px;border-radius:8px;">Rank ' + item.q.rank + '</span>';
+      html += '<span style="font-size:11px;color:#888;">' + item.q.cat + '</span>';
+      html += '</div>';
+      html += '<span style="font-size:12px;font-weight:700;color:#e53935;">×' + item.wrong + '回ミス</span>';
+      html += '</div>';
+      html += '<div style="font-size:13px;color:#333;line-height:1.5;">' + item.q.q.slice(0,65) + (item.q.q.length>65?'…':'') + '</div>';
+      html += '</div>';
+    });
+  }
+  html += '</div>';
+
+  // ⑤SR難易度マップ
+  if (hardSr.length > 0) {
+    html += '<div style="background:#fff;border-radius:14px;padding:18px;margin-bottom:14px;box-shadow:0 2px 10px rgba(0,0,0,.08);">';
+    html += '<div style="font-weight:800;font-size:14px;color:#333;margin-bottom:4px;">🧠 あなたが個人的に一番苦手な問題（SR分析）</div>';
+    html += '<div style="font-size:12px;color:#888;margin-bottom:12px;">SM-2難易度スコアが低い＝定着しにくい問題</div>';
+    hardSr.forEach(({item, q}) => {
+      const ef = Math.round(item.ef * 100) / 100;
+      const efColor = ef < 1.5 ? '#e53935' : ef < 1.8 ? '#f57f17' : '#888';
+      html += '<div style="padding:10px 12px;border-radius:10px;background:#fff8e1;margin-bottom:8px;border-left:3px solid #ffc107;">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">';
+      html += '<span style="font-size:11px;font-weight:700;color:#888;">' + q.cat + ' / Rank ' + q.rank + '</span>';
+      html += '<span style="font-size:12px;font-weight:700;color:' + efColor + ';">難易度スコア: ' + ef + '</span>';
+      html += '</div>';
+      html += '<div style="font-size:13px;color:#333;line-height:1.5;">' + q.q.slice(0,60) + (q.q.length>60?'…':'') + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // ⑥今週の重点学習プラン
+  if (plan.length > 0) {
+    html += '<div style="background:linear-gradient(135deg,#e8eaf6,#ede7f6);border-radius:14px;padding:18px;margin-bottom:14px;border:1px solid #c5cae9;">';
+    html += '<div style="font-weight:800;font-size:14px;color:#283593;margin-bottom:14px;">📋 今すぐやるべきこと（自動生成プラン）</div>';
+    plan.slice(0, 3).forEach((a, i) => {
+      html += '<div style="display:flex;gap:10px;margin-bottom:' + (i<plan.length-1?'12':'0') + 'px;align-items:flex-start;">';
+      html += '<span style="font-size:22px;flex-shrink:0;">' + a.icon + '</span>';
+      html += '<div style="background:#fff;border-radius:10px;padding:10px 12px;flex:1;font-size:13px;color:#333;line-height:1.6;box-shadow:0 1px 4px rgba(0,0,0,.06);">' + a.text + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  body.innerHTML = html;
+}
+// ===== 弱点分析ダッシュボード end =====
+
 function openStatsPanel() {
   closeDrawer();
   renderStatsPanel();
