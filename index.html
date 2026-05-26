@@ -618,6 +618,7 @@
       <button class="drawer-item" style="background:#e8f0fe;color:#1a4a7a;" onclick="openStatsPanel()">📊 正答率ダッシュボード</button>
       <button class="drawer-item" style="background:#fff3e0;color:#bf360c;border:2px solid #ff6d00;" onclick="openWeakPanel()">🎯 弱点分析ダッシュボード</button>
       <button id="sr-drawer-btn" class="drawer-item" style="background:#e3f2fd;color:#1565c0;" onclick="openSrReview()">🔁 復習モード（スペーシングリピティション）</button>
+      <button class="drawer-item" style="background:#e0f2f1;color:#00695c;border:2px solid #26a69a;" onclick="openKosuuPractice()">📊 個数問題 集中特訓</button>
       <div class="drawer-divider"></div>
       <div class="drawer-section-title">📝 模擬試験</div>
       <button class="drawer-item"
@@ -15554,6 +15555,141 @@ function srRateAndNext(qId, quality) {
 }
 // ===== SR end =====
 
+// ===== 個数問題集中特訓 =====
+let kpSession = { queue:[], idx:0, results:[], answered:false };
+
+function openKosuuPractice() {
+  const all = DB.filter(q => isKosuuQ(q));
+  document.getElementById('kp-total').textContent = all.length;
+  document.getElementById('kp-start-overlay').style.display = 'flex';
+  const drawer = document.getElementById('drawer');
+  if(drawer) drawer.style.display = 'none';
+}
+
+function startKosuuPractice(n) {
+  const all = DB.filter(q => isKosuuQ(q)).sort(() => Math.random() - 0.5);
+  kpSession = { queue: n === 0 ? all : all.slice(0, n), idx: 0, results: [], answered: false };
+  document.getElementById('kp-start-overlay').style.display = 'none';
+  document.getElementById('kp-exam-overlay').style.display = 'flex';
+  renderKpQ();
+}
+
+function renderKpQ() {
+  const s = kpSession;
+  const q = s.queue[s.idx];
+  s.answered = false;
+  document.getElementById('kp-progress').textContent = `${s.idx + 1} / ${s.queue.length}問`;
+  const catLabel = {'業法':'宅建業法','権利':'権利関係','法令':'法令制限','税その他':'税その他','免除':'免除科目'};
+  const rankColor = {'S':'#b71c1c','A':'#e65100','B':'#1565c0','C':'#2e7d32'};
+  const qBody = formatKosuuText(q.q);
+  document.getElementById('kp-exam-body').innerHTML = `
+    <div style="background:#fff;border-radius:12px;padding:16px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,.08);">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center;">
+        <span style="background:#00695c;color:#fff;font-size:11px;padding:3px 8px;border-radius:6px;font-weight:700;">${catLabel[q.cat]||q.cat}</span>
+        <span style="background:${rankColor[q.rank]||'#555'};color:#fff;font-size:11px;padding:3px 8px;border-radius:6px;font-weight:700;">ランク${q.rank}</span>
+        <span style="background:#3949ab;color:#fff;font-size:11px;padding:3px 8px;border-radius:6px;font-weight:700;">📊 個数問題</span>
+      </div>
+      <div style="font-size:15px;line-height:1.75;color:#212121;">${qBody}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;" id="kp-choices">
+      ${q.c.map((c,i) => `
+        <button onclick="kpSelectAnswer(${i})" id="kp-c-${i}" style="background:#fff;border:2px solid #b2dfdb;border-radius:10px;padding:13px 14px;text-align:left;font-size:15px;cursor:pointer;transition:.15s;font-family:inherit;">
+          <span style="font-weight:700;color:#00695c;margin-right:8px;">${i+1}.</span>${c}
+        </button>
+      `).join('')}
+    </div>
+    <div id="kp-ex-area" style="display:none;margin-top:12px;"></div>`;
+}
+
+function kpSelectAnswer(ci) {
+  const s = kpSession;
+  if(s.answered) return;
+  s.answered = true;
+  const q = s.queue[s.idx];
+  const correct = ci === q.a;
+  s.results.push({ q, chosen: ci, correct });
+  q.c.forEach((_, i) => {
+    const btn = document.getElementById('kp-c-' + i);
+    if(!btn) return;
+    if(i === q.a) { btn.style.background='#e8f5e9'; btn.style.borderColor='#43a047'; }
+    else if(i === ci && !correct) { btn.style.background='#ffebee'; btn.style.borderColor='#ef5350'; }
+    btn.style.cursor = 'default';
+  });
+  const exArea = document.getElementById('kp-ex-area');
+  if(!exArea) return;
+  exArea.style.display = 'block';
+  exArea.innerHTML = `
+    <div style="background:${correct?'#e8f5e9':'#ffebee'};border-radius:10px;padding:10px 12px;margin-bottom:8px;border-left:4px solid ${correct?'#43a047':'#ef5350'};">
+      <span style="font-weight:700;font-size:14px;color:${correct?'#2e7d32':'#c62828'};">${correct?'✅ 正解！':'❌ 不正解'}</span>
+      <span style="font-size:13px;color:#555;margin-left:8px;">正答：${q.c[q.a]}</span>
+    </div>
+    <div style="background:#fff;border:1px solid #b2dfdb;border-radius:10px;padding:12px;font-size:13px;line-height:1.75;margin-bottom:8px;">
+      ${formatKosuuEx(q.ex)}
+    </div>
+    <div style="background:#e0f2f1;border-radius:8px;padding:8px 12px;font-size:12px;color:#004d40;line-height:1.6;margin-bottom:10px;">💡 ${q.pt||''}</div>
+    <button onclick="kpNext()" style="width:100%;padding:13px;background:#00897b;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;">
+      ${s.idx+1 < s.queue.length ? '次の問題へ →' : '結果を見る 🏆'}
+    </button>`;
+}
+
+function kpNext() {
+  kpSession.idx++;
+  if(kpSession.idx >= kpSession.queue.length) {
+    showKpResults();
+  } else {
+    renderKpQ();
+    const ov = document.getElementById('kp-exam-overlay');
+    if(ov) ov.scrollTop = 0;
+  }
+}
+
+function showKpResults() {
+  document.getElementById('kp-exam-overlay').style.display = 'none';
+  const ro = document.getElementById('kp-results-overlay');
+  ro.style.display = 'flex';
+  const s = kpSession;
+  const total = s.results.length;
+  const ok = s.results.filter(r => r.correct).length;
+  const pct = Math.round(ok / total * 100);
+  const cats = {};
+  s.results.forEach(r => {
+    const c = r.q.cat;
+    if(!cats[c]) cats[c] = { ok:0, total:0 };
+    cats[c].total++;
+    if(r.correct) cats[c].ok++;
+  });
+  const catLabel = {'業法':'宅建業法','権利':'権利関係','法令':'法令制限','税その他':'税その他','免除':'免除科目'};
+  const catHtml = Object.entries(cats).map(([c, v]) => `
+    <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #e0f2f1;font-size:13px;">
+      <span style="color:#333;">${catLabel[c]||c}</span>
+      <span><b style="color:${v.ok/v.total>=0.7?'#2e7d32':'#c62828'}">${v.ok}/${v.total}</b> <span style="color:#888;">(${Math.round(v.ok/v.total*100)}%)</span></span>
+    </div>`).join('');
+  const msg = pct>=80?'🏆 個数問題マスター！':pct>=60?'💪 あと一歩！復習して完璧に！':'📚 繰り返しチャレンジしよう！';
+  const n = s.queue.length;
+  document.getElementById('kp-results-body').innerHTML = `
+    <div style="text-align:center;padding:16px 0;">
+      <div style="font-size:44px;margin-bottom:8px;">${pct>=80?'🏆':pct>=60?'💪':'📚'}</div>
+      <div style="font-size:26px;font-weight:800;color:#00695c;">${ok} / ${total} 問正解</div>
+      <div style="font-size:22px;color:#004d40;font-weight:700;margin:4px 0;">${pct}%</div>
+      <div style="font-size:13px;color:#555;margin-top:6px;">${msg}</div>
+    </div>
+    <div style="background:#f1f8f7;border-radius:12px;padding:12px 14px;margin:12px 0;">
+      <div style="font-size:12px;font-weight:700;color:#00695c;margin-bottom:8px;">📊 カテゴリ別結果</div>
+      ${catHtml}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px;">
+      <button onclick="startKosuuPractice(${n})" style="flex:1;padding:12px;background:#00897b;color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">🔄 もう一度</button>
+      <button onclick="closeKpSession()" style="flex:1;padding:12px;background:#fff;color:#00695c;border:2px solid #26a69a;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">✅ 終了</button>
+    </div>`;
+}
+
+function closeKpSession() {
+  document.getElementById('kp-start-overlay').style.display = 'none';
+  document.getElementById('kp-exam-overlay').style.display = 'none';
+  document.getElementById('kp-results-overlay').style.display = 'none';
+}
+// ===== 個数問題集中特訓 end =====
+
 (function init() {
   updateNigatBadge();
   updateBookmarkBadge();
@@ -15588,6 +15724,40 @@ function srRateAndNext(qId, quality) {
 <!-- SR 結果オーバーレイ -->
 <div id="sr-results-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.78);z-index:2100;align-items:center;justify-content:center;">
   <div id="sr-results-body" style="background:#fff;border-radius:20px;padding:36px 28px;max-width:480px;width:92%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,.35);max-height:88vh;overflow-y:auto;"></div>
+</div>
+
+<!-- 個数問題集中特訓 スタートオーバーレイ -->
+<div id="kp-start-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:2200;justify-content:center;align-items:center;padding:16px;">
+  <div style="background:#fff;border-radius:20px;padding:28px 24px;max-width:400px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,.25);">
+    <div style="text-align:center;margin-bottom:22px;">
+      <div style="font-size:44px;margin-bottom:8px;">📊</div>
+      <div style="font-size:20px;font-weight:800;color:#00695c;">個数問題 集中特訓</div>
+      <div style="font-size:13px;color:#555;margin-top:8px;line-height:1.6;">全<b id="kp-total">53</b>問収録。「正しいものはいくつか」を徹底攻略！<br>何問チャレンジしますか？</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button onclick="startKosuuPractice(15)" style="padding:14px;background:#e0f2f1;border:2px solid #26a69a;border-radius:12px;font-size:15px;font-weight:700;color:#00695c;cursor:pointer;font-family:inherit;">⚡ 15問でサクッと特訓</button>
+      <button onclick="startKosuuPractice(30)" style="padding:14px;background:#b2dfdb;border:2px solid #00897b;border-radius:12px;font-size:15px;font-weight:700;color:#004d40;cursor:pointer;font-family:inherit;">💪 30問でしっかり特訓</button>
+      <button onclick="startKosuuPractice(0)" style="padding:14px;background:#00897b;border:none;border-radius:12px;font-size:15px;font-weight:700;color:#fff;cursor:pointer;font-family:inherit;">🏆 全問チャレンジ！</button>
+      <button onclick="closeKpSession()" style="padding:10px;background:none;border:1px solid #ccc;border-radius:10px;font-size:14px;color:#888;cursor:pointer;font-family:inherit;">戻る</button>
+    </div>
+  </div>
+</div>
+
+<!-- 個数問題集中特訓 問題オーバーレイ -->
+<div id="kp-exam-overlay" style="display:none;position:fixed;inset:0;background:#f1f8f7;z-index:2200;overflow-y:auto;flex-direction:column;">
+  <div style="position:sticky;top:0;background:#00695c;color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;z-index:1;box-shadow:0 2px 6px rgba(0,0,0,.15);">
+    <span style="font-weight:700;font-size:14px;">📊 個数問題特訓</span>
+    <span id="kp-progress" style="font-size:13px;background:rgba(255,255,255,.2);padding:3px 12px;border-radius:20px;"></span>
+    <button onclick="if(confirm('特訓を終了しますか？'))closeKpSession()" style="background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:8px;padding:4px 10px;font-size:12px;cursor:pointer;font-family:inherit;">終了</button>
+  </div>
+  <div id="kp-exam-body" style="padding:16px;max-width:680px;margin:0 auto;width:100%;"></div>
+</div>
+
+<!-- 個数問題集中特訓 結果オーバーレイ -->
+<div id="kp-results-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:2200;justify-content:center;align-items:center;padding:16px;">
+  <div style="background:#fff;border-radius:20px;padding:24px;max-width:420px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.25);">
+    <div id="kp-results-body"></div>
+  </div>
 </div>
 
 </body>
